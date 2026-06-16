@@ -18,6 +18,10 @@ class TransactionStore(context: Context) {
         save(all() + record)
     }
 
+    fun delete(id: Long) {
+        save(all().filterNot { it.id == id })
+    }
+
     fun clear() {
         preferences.edit().remove(KEY_RECORDS).apply()
     }
@@ -32,4 +36,3 @@ class TransactionStore(context: Context) {
         private const val KEY_RECORDS = "records"
     }
 }
-

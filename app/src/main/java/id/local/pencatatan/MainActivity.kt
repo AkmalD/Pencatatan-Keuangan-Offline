@@ -118,7 +118,7 @@ class MainActivity : Activity() {
         }
         historyHeader.addView(text("Riwayat", 18f, Color.rgb(32, 39, 48), Typeface.BOLD), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         historyHeader.addView(Button(this).apply {
-            text = "Hapus"
+            text = "Hapus Semua"
             setAllCaps(false)
             minHeight = dp(40)
             setOnClickListener { confirmClear() }
@@ -355,6 +355,19 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun confirmDelete(record: TransactionRecord) {
+        AlertDialog.Builder(this)
+            .setTitle("Hapus transaksi?")
+            .setMessage("${record.category} - ${formatCurrency(record.amount)}")
+            .setPositiveButton("Hapus") { _, _ ->
+                store.delete(record.id)
+                renderRecords()
+                Toast.makeText(this, "Transaksi dihapus", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
     private fun renderRecords() {
         val records = store.all().sortedByDescending { it.createdAt }
         val income = records.filter { FinanceCategory.isIncome(it.category) }.sumOf { it.amount }
@@ -443,7 +456,26 @@ class MainActivity : Activity() {
             row.addView(text(record.place, 13f, Color.rgb(65, 77, 91), Typeface.NORMAL), topSpace(4))
         }
         row.addView(text(record.message, 13f, Color.rgb(65, 77, 91), Typeface.NORMAL), topSpace(4))
-        row.addView(text(dateFormatter.format(Date(record.createdAt)), 12f, Color.rgb(116, 127, 142), Typeface.NORMAL), topSpace(6))
+
+        val bottom = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        bottom.addView(
+            text(dateFormatter.format(Date(record.createdAt)), 12f, Color.rgb(116, 127, 142), Typeface.NORMAL),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        bottom.addView(Button(this).apply {
+            text = "Hapus"
+            setAllCaps(false)
+            minHeight = dp(34)
+            minimumHeight = dp(34)
+            minWidth = dp(72)
+            minimumWidth = dp(72)
+            setPadding(dp(10), 0, dp(10), 0)
+            setOnClickListener { confirmDelete(record) }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)))
+        row.addView(bottom, topSpace(8))
         return row
     }
 
