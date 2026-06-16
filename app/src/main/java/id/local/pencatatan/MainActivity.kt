@@ -2,6 +2,7 @@ package id.local.pencatatan
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.DatePickerDialog
 import android.graphics.Rect
 import android.graphics.Color
 import android.graphics.Typeface
@@ -27,6 +28,7 @@ import android.widget.TextView
 import android.widget.Toast
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -42,13 +44,17 @@ class MainActivity : Activity() {
     private lateinit var recordsContainer: LinearLayout
     private lateinit var contentContainer: LinearLayout
     private lateinit var composerPanel: View
+    private lateinit var dateFilterText: TextView
     private val visibleWindowBounds = Rect()
+    private var selectedDateStart: Long? = null
+    private var selectedDateEnd: Long? = null
 
     private val localeId = Locale("id", "ID")
     private val currencyFormatter: NumberFormat by lazy {
         NumberFormat.getCurrencyInstance(localeId).apply { maximumFractionDigits = 0 }
     }
     private val dateFormatter = SimpleDateFormat("dd MMM yyyy, HH:mm", localeId)
+    private val dateOnlyFormatter = SimpleDateFormat("dd MMM yyyy", localeId)
     private val categoryColors = mapOf(
         FinanceCategory.FOOD.label to Color.rgb(214, 75, 64),
         FinanceCategory.TRANSPORT.label to Color.rgb(32, 116, 170),
@@ -97,6 +103,8 @@ class MainActivity : Activity() {
         }
 
         contentContainer.addView(text("Pengeluaran", 18f, Color.rgb(32, 39, 48), Typeface.BOLD), block(bottom = 8))
+        contentContainer.addView(dateFilterView(), block(bottom = 12))
+
         pieChartView = ExpensePieChartView(this).apply {
             background = roundedRect(Color.WHITE, Color.rgb(226, 231, 236))
             setPadding(dp(12), dp(12), dp(12), dp(12))
@@ -207,6 +215,73 @@ class MainActivity : Activity() {
 
         composer.addView(inputRow, matchWrap())
         return composer
+    }
+
+    private fun dateFilterView(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundedRect(Color.WHITE, Color.rgb(226, 231, 236))
+            setPadding(dp(14), dp(8), dp(10), dp(8))
+        }
+
+        dateFilterText = text("Tanggal: Semua", 14f, Color.rgb(42, 50, 61), Typeface.BOLD)
+        row.addView(dateFilterText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        row.addView(Button(this).apply {
+            text = "Pilih"
+            setAllCaps(false)
+            minHeight = dp(36)
+            minimumHeight = dp(36)
+            setPadding(dp(10), 0, dp(10), 0)
+            setOnClickListener { showDateFilterPicker() }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)).apply {
+            marginEnd = dp(6)
+        })
+
+        row.addView(Button(this).apply {
+            text = "Reset"
+            setAllCaps(false)
+            minHeight = dp(36)
+            minimumHeight = dp(36)
+            setPadding(dp(10), 0, dp(10), 0)
+            setOnClickListener { clearDateFilter() }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)))
+
+        return row
+    }
+
+    private fun showDateFilterPicker() {
+        val calendar = Calendar.getInstance(localeId)
+        selectedDateStart?.let { calendar.timeInMillis = it }
+
+        DatePickerDialog(
+            this,
+            { _, year, month, dayOfMonth ->
+                val start = Calendar.getInstance(localeId).apply {
+                    set(year, month, dayOfMonth, 0, 0, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                val end = Calendar.getInstance(localeId).apply {
+                    timeInMillis = start.timeInMillis
+                    add(Calendar.DATE, 1)
+                }
+                selectedDateStart = start.timeInMillis
+                selectedDateEnd = end.timeInMillis
+                dateFilterText.text = "Tanggal: ${dateOnlyFormatter.format(Date(start.timeInMillis))}"
+                renderRecords()
+            },
+            calendar.get(Calendar.YEAR),
+            calendar.get(Calendar.MONTH),
+            calendar.get(Calendar.DAY_OF_MONTH)
+        ).show()
+    }
+
+    private fun clearDateFilter() {
+        selectedDateStart = null
+        selectedDateEnd = null
+        dateFilterText.text = "Tanggal: Semua"
+        renderRecords()
     }
 
     private fun attachComposerPositioning(root: FrameLayout) {
@@ -369,7 +444,8 @@ class MainActivity : Activity() {
     }
 
     private fun renderRecords() {
-        val records = store.all().sortedByDescending { it.createdAt }
+        val allRecords = store.all().sortedByDescending { it.createdAt }
+        val records = applyDateFilter(allRecords)
         val income = records.filter { FinanceCategory.isIncome(it.category) }.sumOf { it.amount }
         val expenseRecords = records.filterNot { FinanceCategory.isIncome(it.category) }
         val expense = expenseRecords.sumOf { it.amount }
@@ -400,13 +476,24 @@ class MainActivity : Activity() {
 
         recordsContainer.removeAllViews()
         if (records.isEmpty()) {
-            recordsContainer.addView(text("Belum ada transaksi", 14f, Color.rgb(98, 109, 124), Typeface.NORMAL))
+            val emptyText = if (selectedDateStart == null) {
+                "Belum ada transaksi"
+            } else {
+                "Tidak ada transaksi pada tanggal ini"
+            }
+            recordsContainer.addView(text(emptyText, 14f, Color.rgb(98, 109, 124), Typeface.NORMAL))
             return
         }
 
         records.forEach { record ->
             recordsContainer.addView(recordRow(record), block(bottom = 10))
         }
+    }
+
+    private fun applyDateFilter(records: List<TransactionRecord>): List<TransactionRecord> {
+        val start = selectedDateStart ?: return records
+        val end = selectedDateEnd ?: return records
+        return records.filter { it.createdAt in start until end }
     }
 
     private fun renderLegend(slices: List<ExpenseSlice>, totalExpense: Long) {
