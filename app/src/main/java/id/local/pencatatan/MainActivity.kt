@@ -2,9 +2,11 @@ package id.local.pencatatan
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.graphics.Rect
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
@@ -12,6 +14,7 @@ import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.view.inputmethod.EditorInfo
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -22,7 +25,6 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
-import android.graphics.Rect
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -141,10 +143,10 @@ class MainActivity : Activity() {
         ).apply {
             leftMargin = dp(12)
             rightMargin = dp(12)
-            bottomMargin = dp(40)
+            bottomMargin = dp(48)
         })
-        attachComposerPositioning(root)
         setContentView(root)
+        attachComposerPositioning(root)
     }
 
     private fun composerView(): View {
@@ -208,32 +210,67 @@ class MainActivity : Activity() {
     }
 
     private fun attachComposerPositioning(root: FrameLayout) {
+        composerPanel.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            updateContentBottomPadding(currentComposerBottomMargin())
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            root.setOnApplyWindowInsetsListener { _, insets ->
+                val imeInsets = insets.getInsets(WindowInsets.Type.ime()).bottom
+                val navInsets = insets.getInsets(WindowInsets.Type.navigationBars()).bottom
+                val imeVisible = insets.isVisible(WindowInsets.Type.ime())
+                val rootWasResized = (window.decorView.height - root.height) > dp(80)
+                val bottomOffset = when {
+                    imeVisible && rootWasResized -> dp(8)
+                    imeVisible -> imeInsets + dp(8)
+                    else -> navInsets.coerceAtLeast(dp(40)) + dp(8)
+                }
+                updateComposerBottomOffset(bottomOffset)
+                insets
+            }
+            root.post { root.requestApplyInsets() }
+            return
+        }
+
         root.viewTreeObserver.addOnGlobalLayoutListener {
             root.getWindowVisibleDisplayFrame(visibleWindowBounds)
             val hiddenBottom = (root.rootView.height - visibleWindowBounds.bottom).coerceAtLeast(0)
             val keyboardVisible = hiddenBottom > (root.rootView.height * 0.15f)
+            val rootWasResized = (window.decorView.height - root.height) > dp(80)
             val bottomOffset = if (keyboardVisible) {
-                hiddenBottom + dp(8)
+                if (rootWasResized) dp(8) else hiddenBottom + dp(8)
             } else {
                 hiddenBottom.coerceAtLeast(dp(40)) + dp(8)
             }
 
-            val params = composerPanel.layoutParams as FrameLayout.LayoutParams
-            if (params.bottomMargin != bottomOffset) {
-                params.bottomMargin = bottomOffset
-                composerPanel.layoutParams = params
-            }
-
-            val contentBottomPadding = composerPanel.height + bottomOffset + dp(16)
-            if (contentContainer.paddingBottom != contentBottomPadding) {
-                contentContainer.setPadding(
-                    contentContainer.paddingLeft,
-                    contentContainer.paddingTop,
-                    contentContainer.paddingRight,
-                    contentBottomPadding
-                )
-            }
+            updateComposerBottomOffset(bottomOffset)
         }
+    }
+
+    private fun updateComposerBottomOffset(bottomOffset: Int) {
+        val params = composerPanel.layoutParams as FrameLayout.LayoutParams
+        if (params.bottomMargin != bottomOffset) {
+            params.bottomMargin = bottomOffset
+            composerPanel.layoutParams = params
+        }
+        updateContentBottomPadding(bottomOffset)
+    }
+
+    private fun updateContentBottomPadding(bottomOffset: Int) {
+        val composerHeight = composerPanel.height.takeIf { it > 0 } ?: dp(150)
+        val contentBottomPadding = composerHeight + bottomOffset + dp(16)
+        if (contentContainer.paddingBottom != contentBottomPadding) {
+            contentContainer.setPadding(
+                contentContainer.paddingLeft,
+                contentContainer.paddingTop,
+                contentContainer.paddingRight,
+                contentBottomPadding
+            )
+        }
+    }
+
+    private fun currentComposerBottomMargin(): Int {
+        return (composerPanel.layoutParams as? FrameLayout.LayoutParams)?.bottomMargin ?: dp(48)
     }
 
     private fun bindInput() {
