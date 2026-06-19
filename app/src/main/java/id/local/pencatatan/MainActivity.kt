@@ -18,6 +18,7 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.inputmethod.EditorInfo
 import android.widget.ArrayAdapter
+import android.widget.AdapterView
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -45,9 +46,16 @@ class MainActivity : Activity() {
     private lateinit var contentContainer: LinearLayout
     private lateinit var composerPanel: View
     private lateinit var dateFilterText: TextView
+    private lateinit var monthlyPeriodText: TextView
+    private lateinit var monthlyExpenseText: TextView
+    private lateinit var historyCategorySpinner: Spinner
+    private lateinit var historySortSpinner: Spinner
     private val visibleWindowBounds = Rect()
     private var selectedDateStart: Long? = null
     private var selectedDateEnd: Long? = null
+    private var monthlyReferenceTime: Long = System.currentTimeMillis()
+    private val historyCategoryOptions = listOf(HISTORY_ALL_CATEGORIES) + FinanceCategory.labels
+    private val historySortOptions = listOf(SORT_NEWEST, SORT_AMOUNT_DESC)
 
     private val localeId = Locale("id", "ID")
     private val currencyFormatter: NumberFormat by lazy {
@@ -55,6 +63,7 @@ class MainActivity : Activity() {
     }
     private val dateFormatter = SimpleDateFormat("dd MMM yyyy, HH:mm", localeId)
     private val dateOnlyFormatter = SimpleDateFormat("dd MMM yyyy", localeId)
+    private val monthFormatter = SimpleDateFormat("MMMM yyyy", localeId)
     private val categoryColors = mapOf(
         FinanceCategory.FOOD.label to Color.rgb(214, 75, 64),
         FinanceCategory.TRANSPORT.label to Color.rgb(32, 116, 170),
@@ -70,6 +79,7 @@ class MainActivity : Activity() {
 
         classifier = CategoryClassifier.fromAssets(this)
         store = TransactionStore(this)
+        setTodayDateFilter(updateUi = false)
 
         buildUi()
         bindInput()
@@ -104,6 +114,7 @@ class MainActivity : Activity() {
 
         contentContainer.addView(text("Pengeluaran", 18f, Color.rgb(32, 39, 48), Typeface.BOLD), block(bottom = 8))
         contentContainer.addView(dateFilterView(), block(bottom = 12))
+        contentContainer.addView(monthlyExpenseView(), block(bottom = 12))
 
         pieChartView = ExpensePieChartView(this).apply {
             background = roundedRect(Color.WHITE, Color.rgb(226, 231, 236))
@@ -132,6 +143,7 @@ class MainActivity : Activity() {
             setOnClickListener { confirmClear() }
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)))
         contentContainer.addView(historyHeader, block(bottom = 8))
+        contentContainer.addView(historyFiltersView(), block(bottom = 10))
 
         recordsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -225,7 +237,7 @@ class MainActivity : Activity() {
             setPadding(dp(14), dp(8), dp(10), dp(8))
         }
 
-        dateFilterText = text("Tanggal: Semua", 14f, Color.rgb(42, 50, 61), Typeface.BOLD)
+        dateFilterText = text(dateFilterLabel(), 14f, Color.rgb(42, 50, 61), Typeface.BOLD)
         row.addView(dateFilterText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
         row.addView(Button(this).apply {
@@ -240,15 +252,71 @@ class MainActivity : Activity() {
         })
 
         row.addView(Button(this).apply {
-            text = "Reset"
+            text = "Semua"
             setAllCaps(false)
             minHeight = dp(36)
             minimumHeight = dp(36)
             setPadding(dp(10), 0, dp(10), 0)
-            setOnClickListener { clearDateFilter() }
+            setOnClickListener { showAllDates() }
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)))
 
         return row
+    }
+
+    private fun monthlyExpenseView(): View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedRect(Color.WHITE, Color.rgb(226, 231, 236))
+            setPadding(dp(14), dp(10), dp(14), dp(12))
+        }
+
+        monthlyPeriodText = text("", 13f, Color.rgb(87, 100, 117), Typeface.NORMAL)
+        monthlyExpenseText = text("", 20f, Color.rgb(190, 61, 47), Typeface.BOLD)
+        card.addView(monthlyPeriodText, matchWrap())
+        card.addView(monthlyExpenseText, topSpace(2))
+        return card
+    }
+
+    private fun historyFiltersView(): View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundedRect(Color.WHITE, Color.rgb(226, 231, 236))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+        }
+
+        historyCategorySpinner = Spinner(this).apply {
+            adapter = spinnerAdapter(historyCategoryOptions)
+            onItemSelectedListener = historyFilterListener()
+        }
+        card.addView(historyCategorySpinner, LinearLayout.LayoutParams(0, dp(46), 1f).apply {
+            marginEnd = dp(6)
+        })
+
+        historySortSpinner = Spinner(this).apply {
+            adapter = spinnerAdapter(historySortOptions)
+            onItemSelectedListener = historyFilterListener()
+        }
+        card.addView(historySortSpinner, LinearLayout.LayoutParams(0, dp(46), 1f))
+        return card
+    }
+
+    private fun spinnerAdapter(items: List<String>): ArrayAdapter<String> {
+        return ArrayAdapter(this, android.R.layout.simple_spinner_item, items).also {
+            it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+    }
+
+    private fun historyFilterListener(): AdapterView.OnItemSelectedListener {
+        return object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (this@MainActivity::recordsContainer.isInitialized) {
+                    renderRecords()
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
     }
 
     private fun showDateFilterPicker() {
@@ -258,17 +326,11 @@ class MainActivity : Activity() {
         DatePickerDialog(
             this,
             { _, year, month, dayOfMonth ->
-                val start = Calendar.getInstance(localeId).apply {
-                    set(year, month, dayOfMonth, 0, 0, 0)
-                    set(Calendar.MILLISECOND, 0)
-                }
-                val end = Calendar.getInstance(localeId).apply {
-                    timeInMillis = start.timeInMillis
-                    add(Calendar.DATE, 1)
-                }
+                val (start, end) = dayBounds(year, month, dayOfMonth)
                 selectedDateStart = start.timeInMillis
                 selectedDateEnd = end.timeInMillis
-                dateFilterText.text = "Tanggal: ${dateOnlyFormatter.format(Date(start.timeInMillis))}"
+                monthlyReferenceTime = start.timeInMillis
+                updateDateFilterLabel()
                 renderRecords()
             },
             calendar.get(Calendar.YEAR),
@@ -277,11 +339,68 @@ class MainActivity : Activity() {
         ).show()
     }
 
-    private fun clearDateFilter() {
+    private fun showAllDates() {
         selectedDateStart = null
         selectedDateEnd = null
-        dateFilterText.text = "Tanggal: Semua"
+        updateDateFilterLabel()
         renderRecords()
+    }
+
+    private fun setTodayDateFilter(updateUi: Boolean = true) {
+        val today = Calendar.getInstance(localeId)
+        val (start, end) = dayBounds(
+            today.get(Calendar.YEAR),
+            today.get(Calendar.MONTH),
+            today.get(Calendar.DAY_OF_MONTH)
+        )
+        selectedDateStart = start.timeInMillis
+        selectedDateEnd = end.timeInMillis
+        monthlyReferenceTime = start.timeInMillis
+        if (updateUi && this::dateFilterText.isInitialized) {
+            updateDateFilterLabel()
+        }
+    }
+
+    private fun dayBounds(year: Int, month: Int, dayOfMonth: Int): Pair<Calendar, Calendar> {
+        val start = Calendar.getInstance(localeId).apply {
+            set(year, month, dayOfMonth, 0, 0, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val end = Calendar.getInstance(localeId).apply {
+            timeInMillis = start.timeInMillis
+            add(Calendar.DATE, 1)
+        }
+        return start to end
+    }
+
+    private fun monthBounds(referenceTime: Long): Pair<Long, Long> {
+        val start = Calendar.getInstance(localeId).apply {
+            timeInMillis = referenceTime
+            set(Calendar.DAY_OF_MONTH, 1)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val end = Calendar.getInstance(localeId).apply {
+            timeInMillis = start.timeInMillis
+            add(Calendar.MONTH, 1)
+        }
+        return start.timeInMillis to end.timeInMillis
+    }
+
+    private fun updateDateFilterLabel() {
+        dateFilterText.text = dateFilterLabel()
+    }
+
+    private fun dateFilterLabel(): String {
+        val start = selectedDateStart ?: return "Tanggal: Semua"
+        val today = Calendar.getInstance(localeId)
+        val selected = Calendar.getInstance(localeId).apply { timeInMillis = start }
+        val formattedDate = dateOnlyFormatter.format(Date(start))
+        val isToday = selected.get(Calendar.YEAR) == today.get(Calendar.YEAR) &&
+            selected.get(Calendar.DAY_OF_YEAR) == today.get(Calendar.DAY_OF_YEAR)
+        return if (isToday) "Hari ini: $formattedDate" else "Tanggal: $formattedDate"
     }
 
     private fun attachComposerPositioning(root: FrameLayout) {
@@ -445,6 +564,7 @@ class MainActivity : Activity() {
 
     private fun renderRecords() {
         val allRecords = store.all().sortedByDescending { it.createdAt }
+        renderMonthlyExpense(allRecords)
         val records = applyDateFilter(allRecords)
         val income = records.filter { FinanceCategory.isIncome(it.category) }.sumOf { it.amount }
         val expenseRecords = records.filterNot { FinanceCategory.isIncome(it.category) }
@@ -475,25 +595,62 @@ class MainActivity : Activity() {
         renderLegend(slices, expense)
 
         recordsContainer.removeAllViews()
-        if (records.isEmpty()) {
+        val historyRecords = applyHistoryFilters(records)
+        if (historyRecords.isEmpty()) {
             val emptyText = if (selectedDateStart == null) {
-                "Belum ada transaksi"
+                "Belum ada transaksi sesuai filter"
             } else {
-                "Tidak ada transaksi pada tanggal ini"
+                "Tidak ada transaksi sesuai filter pada tanggal ini"
             }
             recordsContainer.addView(text(emptyText, 14f, Color.rgb(98, 109, 124), Typeface.NORMAL))
             return
         }
 
-        records.forEach { record ->
+        historyRecords.forEach { record ->
             recordsContainer.addView(recordRow(record), block(bottom = 10))
         }
+    }
+
+    private fun renderMonthlyExpense(records: List<TransactionRecord>) {
+        val (monthStart, monthEnd) = monthBounds(monthlyReferenceTime)
+        val monthlyExpense = records
+            .filterNot { FinanceCategory.isIncome(it.category) }
+            .filter { it.createdAt in monthStart until monthEnd }
+            .sumOf { it.amount }
+        monthlyPeriodText.text = "Pengeluaran ${monthFormatter.format(Date(monthStart))}"
+        monthlyExpenseText.text = formatCurrency(monthlyExpense)
     }
 
     private fun applyDateFilter(records: List<TransactionRecord>): List<TransactionRecord> {
         val start = selectedDateStart ?: return records
         val end = selectedDateEnd ?: return records
         return records.filter { it.createdAt in start until end }
+    }
+
+    private fun applyHistoryFilters(records: List<TransactionRecord>): List<TransactionRecord> {
+        val selectedCategory = if (this::historyCategorySpinner.isInitialized) {
+            historyCategorySpinner.selectedItem?.toString()
+        } else {
+            HISTORY_ALL_CATEGORIES
+        }
+        val selectedSort = if (this::historySortSpinner.isInitialized) {
+            historySortSpinner.selectedItem?.toString()
+        } else {
+            SORT_NEWEST
+        }
+
+        val categoryFiltered = if (selectedCategory == HISTORY_ALL_CATEGORIES || selectedCategory.isNullOrBlank()) {
+            records
+        } else {
+            records.filter { it.category == selectedCategory }
+        }
+
+        return when (selectedSort) {
+            SORT_AMOUNT_DESC -> categoryFiltered.sortedWith(
+                compareByDescending<TransactionRecord> { it.amount }.thenByDescending { it.createdAt }
+            )
+            else -> categoryFiltered.sortedByDescending { it.createdAt }
+        }
     }
 
     private fun renderLegend(slices: List<ExpenseSlice>, totalExpense: Long) {
@@ -619,5 +776,11 @@ class MainActivity : Activity() {
 
     private fun dp(value: Int): Int {
         return (value * resources.displayMetrics.density).roundToInt()
+    }
+
+    companion object {
+        private const val HISTORY_ALL_CATEGORIES = "Semua Kategori"
+        private const val SORT_NEWEST = "Terbaru"
+        private const val SORT_AMOUNT_DESC = "Nominal terbesar"
     }
 }
