@@ -3,10 +3,12 @@ package id.local.pencatatan
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.DatePickerDialog
+import android.content.Intent
 import android.graphics.Rect
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.text.Editable
@@ -22,11 +24,15 @@ import android.widget.AdapterView
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.NumberPicker
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import java.text.DateFormatSymbols
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -54,6 +60,7 @@ class MainActivity : Activity() {
     private var selectedDateStart: Long? = null
     private var selectedDateEnd: Long? = null
     private var monthlyReferenceTime: Long = System.currentTimeMillis()
+    private var pendingExportRequest: ExportRequest? = null
     private val historyCategoryOptions = listOf(HISTORY_ALL_CATEGORIES) + FinanceCategory.labels
     private val historySortOptions = listOf(SORT_NEWEST, SORT_AMOUNT_DESC)
 
@@ -64,6 +71,8 @@ class MainActivity : Activity() {
     private val dateFormatter = SimpleDateFormat("dd MMM yyyy, HH:mm", localeId)
     private val dateOnlyFormatter = SimpleDateFormat("dd MMM yyyy", localeId)
     private val monthFormatter = SimpleDateFormat("MMMM yyyy", localeId)
+    private val fileDayFormatter = SimpleDateFormat("yyyyMMdd", Locale.US)
+    private val fileMonthFormatter = SimpleDateFormat("yyyyMM", Locale.US)
     private val categoryColors = mapOf(
         FinanceCategory.FOOD.label to Color.rgb(214, 75, 64),
         FinanceCategory.TRANSPORT.label to Color.rgb(32, 116, 170),
@@ -72,6 +81,20 @@ class MainActivity : Activity() {
         FinanceCategory.ENTERTAINMENT.label to Color.rgb(200, 74, 132),
         FinanceCategory.HEALTH.label to Color.rgb(34, 145, 115),
         FinanceCategory.TRANSFER.label to Color.rgb(90, 102, 122)
+    )
+
+    private enum class ExportReportType {
+        DAILY,
+        MONTHLY
+    }
+
+    private data class ExportRequest(
+        val type: ExportReportType,
+        val title: String,
+        val periodLabel: String,
+        val fileName: String,
+        val startMillis: Long,
+        val endMillis: Long
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -98,12 +121,28 @@ class MainActivity : Activity() {
         }
 
         val header = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(20), dp(22), dp(20), dp(16))
             setBackgroundColor(Color.rgb(21, 94, 87))
         }
-        header.addView(text("Pencatatan", 24f, Color.WHITE, Typeface.BOLD))
-        header.addView(text("Keuangan lokal", 14f, Color.rgb(216, 239, 235), Typeface.NORMAL))
+        val headerCopy = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        headerCopy.addView(text("Pencatatan", 24f, Color.WHITE, Typeface.BOLD))
+        headerCopy.addView(text("Keuangan lokal", 14f, Color.rgb(216, 239, 235), Typeface.NORMAL))
+        header.addView(headerCopy, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(ImageButton(this).apply {
+            contentDescription = "Export laporan"
+            setImageResource(R.drawable.ic_upload)
+            setColorFilter(Color.WHITE)
+            background = null
+            scaleType = ImageView.ScaleType.CENTER
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setOnClickListener { showExportDialog() }
+        }, LinearLayout.LayoutParams(dp(40), dp(40)).apply {
+            marginStart = dp(12)
+        })
         page.addView(header, matchWrap())
 
         val scrollView = ScrollView(this)
@@ -316,6 +355,212 @@ class MainActivity : Activity() {
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+    }
+
+    private fun showExportDialog() {
+        var reportType = ExportReportType.DAILY
+        val selectedCalendar = Calendar.getInstance(localeId).apply {
+            timeInMillis = selectedDateStart ?: System.currentTimeMillis()
+        }
+        var exportRequest = createExportRequest(reportType, selectedCalendar.timeInMillis)
+
+        val dialogContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4), dp(4), dp(4), 0)
+        }
+
+        val typeSpinner = Spinner(this).apply {
+            adapter = spinnerAdapter(listOf("Laporan harian", "Laporan bulanan"))
+        }
+        val periodText = text("", 15f, Color.rgb(42, 50, 61), Typeface.BOLD)
+        val choosePeriodButton = Button(this).apply {
+            setAllCaps(false)
+            minHeight = dp(40)
+        }
+
+        fun refreshDialogState() {
+            exportRequest = createExportRequest(reportType, selectedCalendar.timeInMillis)
+            periodText.text = exportRequest.periodLabel
+            choosePeriodButton.text = if (reportType == ExportReportType.DAILY) {
+                "Pilih tanggal"
+            } else {
+                "Pilih bulan"
+            }
+        }
+
+        typeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                reportType = if (position == 0) ExportReportType.DAILY else ExportReportType.MONTHLY
+                refreshDialogState()
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
+        choosePeriodButton.setOnClickListener {
+            if (reportType == ExportReportType.DAILY) {
+                DatePickerDialog(
+                    this,
+                    { _, year, month, dayOfMonth ->
+                        selectedCalendar.set(year, month, dayOfMonth, 0, 0, 0)
+                        selectedCalendar.set(Calendar.MILLISECOND, 0)
+                        refreshDialogState()
+                    },
+                    selectedCalendar.get(Calendar.YEAR),
+                    selectedCalendar.get(Calendar.MONTH),
+                    selectedCalendar.get(Calendar.DAY_OF_MONTH)
+                ).show()
+            } else {
+                showMonthPicker(selectedCalendar.timeInMillis) { pickedMonth ->
+                    selectedCalendar.timeInMillis = pickedMonth
+                    refreshDialogState()
+                }
+            }
+        }
+
+        dialogContent.addView(text("Jenis laporan", 13f, Color.rgb(87, 100, 117), Typeface.NORMAL), block(bottom = 4))
+        dialogContent.addView(typeSpinner, block(bottom = 12))
+        dialogContent.addView(text("Periode", 13f, Color.rgb(87, 100, 117), Typeface.NORMAL), block(bottom = 4))
+        dialogContent.addView(periodText, block(bottom = 8))
+        dialogContent.addView(choosePeriodButton, matchWrap())
+        refreshDialogState()
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Export laporan")
+            .setView(dialogContent)
+            .setPositiveButton("Export", null)
+            .setNegativeButton("Batal", null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                startCreateReportDocument(exportRequest)
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun showMonthPicker(initialTime: Long, onPicked: (Long) -> Unit) {
+        val initialCalendar = Calendar.getInstance(localeId).apply { timeInMillis = initialTime }
+        val currentYear = Calendar.getInstance(localeId).get(Calendar.YEAR)
+        val initialYear = initialCalendar.get(Calendar.YEAR)
+        val monthNames = DateFormatSymbols(localeId).months.take(12).toTypedArray()
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8), dp(8), dp(8), 0)
+        }
+        val monthPicker = NumberPicker(this).apply {
+            minValue = 0
+            maxValue = 11
+            displayedValues = monthNames
+            value = initialCalendar.get(Calendar.MONTH)
+        }
+        val yearPicker = NumberPicker(this).apply {
+            minValue = minOf(currentYear - 10, initialYear)
+            maxValue = maxOf(currentYear + 10, initialYear)
+            value = initialYear
+        }
+        row.addView(monthPicker, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(yearPicker, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        AlertDialog.Builder(this)
+            .setTitle("Pilih bulan")
+            .setView(row)
+            .setPositiveButton("Pilih") { _, _ ->
+                val selected = Calendar.getInstance(localeId).apply {
+                    set(yearPicker.value, monthPicker.value, 1, 0, 0, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                onPicked(selected.timeInMillis)
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    private fun createExportRequest(type: ExportReportType, referenceTime: Long): ExportRequest {
+        return when (type) {
+            ExportReportType.DAILY -> {
+                val reference = Calendar.getInstance(localeId).apply { timeInMillis = referenceTime }
+                val (start, end) = dayBounds(
+                    reference.get(Calendar.YEAR),
+                    reference.get(Calendar.MONTH),
+                    reference.get(Calendar.DAY_OF_MONTH)
+                )
+                ExportRequest(
+                    type = type,
+                    title = "Laporan Keuangan Harian",
+                    periodLabel = dateOnlyFormatter.format(Date(start.timeInMillis)),
+                    fileName = "laporan_harian_${fileDayFormatter.format(Date(start.timeInMillis))}.xlsx",
+                    startMillis = start.timeInMillis,
+                    endMillis = end.timeInMillis
+                )
+            }
+            ExportReportType.MONTHLY -> {
+                val (start, end) = monthBounds(referenceTime)
+                ExportRequest(
+                    type = type,
+                    title = "Laporan Keuangan Bulanan",
+                    periodLabel = monthFormatter.format(Date(start)),
+                    fileName = "laporan_bulanan_${fileMonthFormatter.format(Date(start))}.xlsx",
+                    startMillis = start,
+                    endMillis = end
+                )
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun startCreateReportDocument(request: ExportRequest) {
+        pendingExportRequest = request
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = XLSX_MIME_TYPE
+            putExtra(Intent.EXTRA_TITLE, request.fileName)
+        }
+        try {
+            startActivityForResult(intent, REQUEST_CREATE_REPORT_DOCUMENT)
+        } catch (error: Exception) {
+            pendingExportRequest = null
+            Toast.makeText(this, "Tidak bisa membuka pemilih file", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_CREATE_REPORT_DOCUMENT || resultCode != RESULT_OK) return
+
+        val uri = data?.data
+        val request = pendingExportRequest
+        pendingExportRequest = null
+
+        if (uri == null || request == null) {
+            Toast.makeText(this, "Export dibatalkan", Toast.LENGTH_SHORT).show()
+            return
+        }
+        writeReportToUri(uri, request)
+    }
+
+    private fun writeReportToUri(uri: Uri, request: ExportRequest) {
+        try {
+            val records = store.all()
+                .filter { it.createdAt in request.startMillis until request.endMillis }
+                .sortedBy { it.createdAt }
+            contentResolver.openOutputStream(uri)?.use { output ->
+                FinanceReportExporter.writeXlsx(
+                    outputStream = output,
+                    title = request.title,
+                    periodLabel = request.periodLabel,
+                    records = records,
+                    locale = localeId
+                )
+            } ?: error("Tidak bisa membuka lokasi file")
+            Toast.makeText(this, "Laporan berhasil diexport", Toast.LENGTH_LONG).show()
+        } catch (error: Exception) {
+            Toast.makeText(this, "Export gagal: ${error.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -782,5 +1027,7 @@ class MainActivity : Activity() {
         private const val HISTORY_ALL_CATEGORIES = "Semua Kategori"
         private const val SORT_NEWEST = "Terbaru"
         private const val SORT_AMOUNT_DESC = "Nominal terbesar"
+        private const val REQUEST_CREATE_REPORT_DOCUMENT = 7201
+        private const val XLSX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     }
 }
